@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/Null-Austin/pb-assets@main/PhantomSans-stylesheet.css">
+  </head>
+  <body>
+    <h2>Text Modifications</h2>
+    <p class="hint">
+      Add code to the text box bellow; using the variable "text" and returning
+      text back on the modifications
+    </p>
+    <textarea
+      name=""
+      id="_text"
+      placeholder="The quick brown fox jumps over the lazy dog."
+    ></textarea>
+    <textarea name="" id="origin" placeholder="return text"></textarea>
+    <textarea name="" id="default" disabled></textarea>
+    <button>generate</button>
+  </body>
+</html>
+
+<script>
+  function root() {
+    let _text = document.querySelector("#_text");
+    let generate = document.querySelector("button");
+    let textarea1 = document.getElementById("origin");
+    let textarea2 = document.getElementById("default");
+
+    generate.addEventListener("click", function () {
+      // let textarea2 = textarea2 // force changes to be local to this scope...?
+      textarea2.value = new Function(
+        "text",
+        `return ((text)=>{${textarea1.value.length > 0 ? textarea1.value : textarea1.placeholder}})(text)`,
+      )(_text.value.length > 0 ? _text.value : _text.placeholder);
+    });
+  }
+  document.addEventListener("DOMContentLoaded", root);
+</script>
+
+<style>
+  textarea, button{
+    border: unset;
+    background-color: unset;
+    color: unset;
+  }
+  body, html{
+    width: 100%;
+    height: 100%;
+    padding: 0;
+    margin: 0;
+    background-color: #111111;
+    color: #f7ece1;
+    font-family: "Phantom Sans";
+  }
+  button{
+    background-color: #0cca4a;
+    padding: 10px;
+    font-weight: bolder;
+    font-size: 15px;
+    border-radius: 2px white solid;
+    cursor: pointer;
+  }
+  textarea{
+    background-color: #1a1a1a;
+  }
+
+  body{
+    display: flex;
+    /* flex-wrap: wrap; */
+    gap: 8px;
+    /* height: max-content; */
+    flex-direction: column;
+  }
+  body>*{
+    height: max-content;
+    flex-grow: 0;
+  }
+  textarea, button{
+    /* flex-basis: 100%; */
+    flex-grow: 0;
+  }
+  textarea{
+    height: unset;
+    flex-grow: 1;
+    resize: none;
+    max-height: unset;
+    min-height: unset;
+  }
+  h2, p{
+    padding: 0;
+    margin: 0;
+    flex-grow: 0;
+    text-align: center;
+  }
+  body *{
+    /* background-color: black; */
+  }
+</style>

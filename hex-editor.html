@@ -1,0 +1,491 @@
+<!-- cdn.carbonads.com/carbon.js?serve=CWBDPK3J&placement=realtimehtmlcom&format=cover -->
+<!-- Backend primarily coded by AI -->
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Document</title>
+    <style>
+      *{
+        /* background-color: rgba(0, 0, 0, 0.159); */
+        font-family: monospace;
+        padding: 0;
+        margin: 0;
+      }
+      body, html, #binary{
+        width: 100%;
+        height: 100%;
+        padding: 0;
+        margin: 0;
+      }
+      #binary{
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+        font-size: 1.3em;
+      }
+      #binary>*{
+        display: flex;
+        flex-direction: row;
+        row-gap: 0.5rem;
+      }
+      #binary .data{
+        flex: 10;
+        display: flex;
+        width: 100%;
+        flex-direction: row;
+        gap: 0.4rem;
+      }
+      #binary .data .dt{
+        display: flex;
+        gap: .2rem;
+      }
+      #binary .header{
+        flex: 1;
+        font-weight: bolder;
+      }
+      #binary .data .dt .hx{
+        display: flex;
+        flex-direction: row;
+        gap: 0rem;
+      }
+      #binary{
+        display: flex;
+        flex-direction: column;
+        gap: 0.1rem;
+      }
+      .template{
+        display: none;
+      }
+
+      /* minimal additions (necessary for edit + raw text + caret/selection) */
+      .row{
+        gap: 0.6rem; /* restore space between header and data (your request) */
+        align-items: baseline;
+      }
+      .raw{
+        flex: 6;
+        opacity: 0.85;
+        padding-left: 0.6rem;
+        white-space: pre;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .hx > div{
+        min-width: 0.7ch;
+        outline: none;
+      }
+      .hx > div[contenteditable="true"]{
+        caret-color: transparent; /* we draw our own blinking caret */
+      }
+      /* our blinking caret */
+      .caret{
+        position: relative;
+      }
+      .caret::after{
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 0.1em;
+        width: 0.65ch;
+        height: 1.05em;
+        border-left: 2px solid currentColor;
+        animation: blink 1s steps(1) infinite;
+        pointer-events: none;
+      }
+      @keyframes blink{
+        50%{ opacity: 0; }
+      }
+
+      .edited .header{
+        /* subtle hint only; does not change your scheme */
+        text-decoration: underline;
+        text-decoration-style: dotted;
+      }
+    </style>
+
+    <script type="module">
+      let template;
+      let binary;
+
+      const STORAGE_KEY = "binary_editor_edits_v1";
+      const HEX = "0123456789abcdef";
+
+      // ---- persistence (only store edited rows) ----
+      function loadEdits(){
+        try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}"); }
+        catch { return {}; }
+      }
+      function saveEdits(map){
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(map));
+      }
+
+      // ---- helpers ----
+      function clampNibbleChar(ch){
+        if (!ch) return "0";
+        ch = String(ch).toLowerCase();
+        if (HEX.includes(ch)) return ch;
+        return null;
+      }
+      function rowOffsetHex(rowIndex){
+        return (rowIndex * 16).toString(16).padStart(4, "0");
+      }
+      function bytesToAscii(bytes16){
+        let out = "";
+        for (const b of bytes16){
+          out += (b >= 32 && b <= 126) ? String.fromCharCode(b) : ".";
+        }
+        return out;
+      }
+      function packRowFromDom(rowEl){
+        const nibs = rowEl.querySelectorAll(".hx .i1, .hx .i2");
+        const bytes = new Uint8Array(16);
+        for (let i = 0; i < 16; i++){
+          const hi = nibs[i*2]?.textContent?.trim() ?? "0";
+          const lo = nibs[i*2+1]?.textContent?.trim() ?? "0";
+          const hiC = clampNibbleChar(hi) ?? "0";
+          const loC = clampNibbleChar(lo) ?? "0";
+          bytes[i] = ((parseInt(hiC, 16) << 4) | parseInt(loC, 16)) & 0xff;
+        }
+        return bytes;
+      }
+      function applyBytesToRow(rowEl, bytes){
+        const nibs = rowEl.querySelectorAll(".hx .i1, .hx .i2");
+        for (let i = 0; i < 16; i++){
+          const v = bytes[i] ?? 0;
+          const hi = ((v >> 4) & 0xf).toString(16);
+          const lo = (v & 0xf).toString(16);
+          nibs[i*2].textContent = hi;
+          nibs[i*2+1].textContent = lo;
+        }
+        updateRawText(rowEl, bytes);
+      }
+      function updateRawText(rowEl, bytes){
+        const raw = rowEl.querySelector(".raw");
+        if (raw) raw.textContent = bytesToAscii(bytes);
+      }
+
+      function getNibCells(rowEl){
+        return Array.from(rowEl.querySelectorAll(".hx .i1, .hx .i2"));
+      }
+
+      // caret management (so arrows work + blinking caret)
+      let caretEl = null;
+      function setCaret(el){
+        if (caretEl && caretEl !== el) caretEl.classList.remove("caret");
+        caretEl = el;
+        if (caretEl) caretEl.classList.add("caret");
+      }
+      function focusCell(el){
+        el.focus();
+        // Ensure actual selection is collapsed (prevents selecting multiple chars)
+        const sel = window.getSelection();
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        range.collapse(false);
+        sel.removeAllRanges();
+        sel.addRange(range);
+        setCaret(el);
+      }
+
+      // ---- engine ----
+      const engine = new class {
+        constructor(){
+          this.rows = [];
+          this.edits = loadEdits();
+          this.renderBatchSize = 32;
+          this.maxDomRows = 800;
+
+          this.io = null;          // IntersectionObserver
+          this.sentinel = null;    // the “2nd to last row” we watch
+        }
+
+        addRow(){
+          const rowIndex = this.rows.length;
+          const row = template.cloneNode(true);
+          row.classList.remove("template");
+          row.classList.add("row");
+          row.dataset.row = String(rowIndex);
+
+          // header: show offset in hex
+          row.querySelector(".header").textContent = rowOffsetHex(rowIndex);
+
+          // add raw text container on the right (same row)
+          const raw = document.createElement("div");
+          raw.className = "raw";
+          raw.textContent = "................";
+          row.appendChild(raw);
+
+          // make nibble cells editable
+          for (const cell of row.querySelectorAll(".hx .i1, .hx .i2")){
+            cell.setAttribute("contenteditable", "true");
+            cell.setAttribute("spellcheck", "false");
+            cell.textContent = "0";
+          }
+
+          // load persisted edit (if any)
+          const saved = this.edits[rowIndex];
+          if (typeof saved === "string" && saved.length === 32){
+            const bytes = new Uint8Array(16);
+            for (let i = 0; i < 16; i++){
+              bytes[i] = parseInt(saved.slice(i*2, i*2 + 2), 16) & 0xff;
+            }
+            applyBytesToRow(row, bytes);
+            row.classList.add("edited");
+          } else {
+            updateRawText(row, packRowFromDom(row));
+          }
+
+          // input filtering (block Enter, paste, etc.)
+          row.addEventListener("beforeinput", (e) => {
+            const t = e.target;
+            if (!(t instanceof HTMLElement)) return;
+            if (!t.matches(".hx .i1, .hx .i2")) return;
+
+            // hard-block newlines + rich edits
+            if (
+              e.inputType === "insertParagraph" ||
+              e.inputType === "insertLineBreak" ||
+              e.inputType === "insertFromPaste" ||
+              e.inputType === "insertFromDrop"
+            ){
+              e.preventDefault();
+              return;
+            }
+
+            if (e.inputType === "insertText"){
+              const ch = clampNibbleChar(e.data);
+              if (ch === null){
+                e.preventDefault();
+                return;
+              }
+              e.preventDefault();
+              t.textContent = ch;
+
+              // advance to next cell
+              const all = getNibCells(row);
+              const idx = all.indexOf(t);
+              const next = all[idx + 1];
+              if (next) focusCell(next);
+              else focusCell(t);
+
+              this.markEditedAndPersist(row);
+              return;
+            }
+
+            if (e.inputType === "deleteContentBackward"){
+              e.preventDefault();
+              t.textContent = "0";
+              this.markEditedAndPersist(row);
+              return;
+            }
+          });
+
+          // arrow key navigation + backspace behavior
+          row.addEventListener("keydown", (e) => {
+            const t = e.target;
+            if (!(t instanceof HTMLElement)) return;
+            if (!t.matches(".hx .i1, .hx .i2")) return;
+
+            const all = getNibCells(row);
+            const idx = all.indexOf(t);
+
+            if (e.key === "ArrowLeft"){
+              e.preventDefault();
+              const prev = all[idx - 1];
+              if (prev) focusCell(prev);
+              return;
+            }
+            if (e.key === "ArrowRight"){
+              e.preventDefault();
+              const next = all[idx + 1];
+              if (next) focusCell(next);
+              return;
+            }
+            if (e.key === "ArrowUp" || e.key === "ArrowDown"){
+              // optional: keep default scroll behavior; you can wire vertical nav later
+              return;
+            }
+            if (e.key === "Enter"){
+              e.preventDefault();
+              return;
+            }
+          });
+
+          row.addEventListener("focusin", (e) => {
+            const t = e.target;
+            if (t instanceof HTMLElement && t.matches(".hx .i1, .hx .i2")){
+              focusCell(t);
+            }
+          });
+
+          this.rows.push(row);
+          binary.appendChild(row);
+
+          // trim DOM if too large (does NOT delete saved edits)
+          if (this.rows.length > this.maxDomRows){
+            const removeCount = Math.floor(this.maxDomRows / 4);
+            for (let i = 0; i < removeCount; i++){
+              this.rows[i]?.remove();
+            }
+            this.rows = this.rows.slice(removeCount);
+          }
+        }
+
+        markEditedAndPersist(rowEl){
+          const rowIndex = parseInt(rowEl.dataset.row, 10);
+          const bytes = packRowFromDom(rowEl);
+          updateRawText(rowEl, bytes);
+
+          let hex = "";
+          for (const b of bytes) hex += b.toString(16).padStart(2, "0");
+
+          const isAllZero = /^0{32}$/.test(hex);
+          if (isAllZero){
+            delete this.edits[rowIndex];
+            rowEl.classList.remove("edited");
+          } else {
+            this.edits[rowIndex] = hex;
+            rowEl.classList.add("edited");
+          }
+          saveEdits(this.edits);
+        }
+
+        // IntersectionObserver-based infinite scroll:
+        // when the *second-to-last* row is visible -> add more.
+        setupInfiniteScroll(){
+          if (this.io) this.io.disconnect();
+
+          this.io = new IntersectionObserver((entries) => {
+            for (const ent of entries){
+              if (!ent.isIntersecting) continue;
+              // add one batch, then re-arm sentinel
+              for (let i = 0; i < this.renderBatchSize; i++) this.addRow();
+              this.armSentinel();
+            }
+          }, {
+            root: null,
+            threshold: 0.01
+          });
+
+          this.armSentinel();
+        }
+
+        armSentinel(){
+          if (this.sentinel) this.io.unobserve(this.sentinel);
+
+          // pick the 2nd-to-last actual row element currently in DOM
+          const rowsInDom = Array.from(binary.querySelectorAll(".row"));
+          if (rowsInDom.length < 2) return;
+
+          this.sentinel = rowsInDom[rowsInDom.length - 2];
+          this.io.observe(this.sentinel);
+        }
+      }();
+
+      async function root(){
+        try {
+          binary = document.getElementById("binary");
+          template = binary.querySelector(".template").cloneNode(true);
+          binary.querySelector(".template").remove();
+
+          // initial rows
+          for (let i = 0; i < 80; i++) engine.addRow();
+
+          // infinite scroll (2nd-to-last row in viewport triggers add)
+          engine.setupInfiniteScroll();
+        } catch (e){
+          prompt(`An error has occured!... \n\n${e}`, e);
+        }
+      }
+
+      document.addEventListener("DOMContentLoaded", root);
+    </script>
+  </head>
+
+  <body>
+    <div id="binary">
+      <div class="template row">
+        <span class="header">
+          0000
+          <!-- Row number (in hex ofc) -->
+        </span>
+        <div class="data">
+          <div class="dt dt1">
+            <div class="hx hx1">
+              <div class="i1">0</div>
+              <div class="i2">0</div>
+            </div>
+            <div class="hx hx2">
+              <div class="i1">0</div>
+              <div class="i2">0</div>
+            </div>
+            <div class="hx hx3">
+              <div class="i1">0</div>
+              <div class="i2">0</div>
+            </div>
+            <div class="hx hx4">
+              <div class="i1">0</div>
+              <div class="i2">0</div>
+            </div>
+          </div>
+          <div class="dt dt2">
+            <div class="hx hx1">
+              <div class="i1">0</div>
+              <div class="i2">0</div>
+            </div>
+            <div class="hx hx2">
+              <div class="i1">0</div>
+              <div class="i2">0</div>
+            </div>
+            <div class="hx hx3">
+              <div class="i1">0</div>
+              <div class="i2">0</div>
+            </div>
+            <div class="hx hx4">
+              <div class="i1">0</div>
+              <div class="i2">0</div>
+            </div>
+          </div>
+          <div class="dt dt3">
+            <div class="hx hx1">
+              <div class="i1">0</div>
+              <div class="i2">0</div>
+            </div>
+            <div class="hx hx2">
+              <div class="i1">0</div>
+              <div class="i2">0</div>
+            </div>
+            <div class="hx hx3">
+              <div class="i1">0</div>
+              <div class="i2">0</div>
+            </div>
+            <div class="hx hx4">
+              <div class="i1">0</div>
+              <div class="i2">0</div>
+            </div>
+          </div>
+          <div class="dt dt4">
+            <div class="hx hx1">
+              <div class="i1">0</div>
+              <div class="i2">0</div>
+            </div>
+            <div class="hx hx2">
+              <div class="i1">0</div>
+              <div class="i2">0</div>
+            </div>
+            <div class="hx hx3">
+              <div class="i1">0</div>
+              <div class="i2">0</div>
+            </div>
+            <div class="hx hx4">
+              <div class="i1">0</div>
+              <div class="i2">0</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>

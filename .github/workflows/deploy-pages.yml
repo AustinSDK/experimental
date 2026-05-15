@@ -1,0 +1,74 @@
+name: Deploy HTML preview to GitHub Pages (preserve original index.html)
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  deploy:
+    name: Build & deploy HTML site to GitHub Pages
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Collect .html files into site/ (preserve relative paths)
+        run: |
+          rm -rf site
+          mkdir -p site
+          # Copy all .html files while preserving relative paths; skip .git and any existing site/ dir
+          find . -path './.git' -prune -o -type f -name '*.html' -print0 \
+            | while IFS= read -r -d '' file; do
+                rel="${file#./}"
+                case "$rel" in site/*) continue ;; esac
+                mkdir -p "site/$(dirname "$rel")"
+                cp "$file" "site/$rel"
+              done
+
+      - name: Generate all-files.html (optional listing of all .html files)
+        run: |
+          cat > site/all-files.html <<'HTML_HEAD'
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+            <meta charset="utf-8"/>
+            <meta name="viewport" content="width=device-width, initial-scale=1"/>
+            <title>All HTML files</title>
+          </head>
+          <body>
+            <h1>All HTML files in this preview</h1>
+            <ul>
+          HTML_HEAD
+
+          find site -type f -name '*.html' -print0 \
+            | while IFS= read -r -d '' f; do
+                rel="${f#site/}"
+                if [ "$rel" != "all-files.html" ]; then
+                  printf '  <li><a href="%s">%s</a></li>\n' "$rel" "$rel" >> site/all-files.html
+                fi
+              done
+
+          cat >> site/all-files.html <<'HTML_TAIL'
+            </ul>
+          </body>
+          </html>
+          HTML_TAIL
+
+      - name: Show site/ contents for debug
+        run: |
+          echo "Files that will be published:"
+          find site -type f -maxdepth 5 -print
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v1
+        with:
+          path: site
+
+      - name: Deploy to GitHub Pages
+        uses: actions/deploy-pages@v1

@@ -54,7 +54,7 @@ jobs:
             | while IFS= read -r -d '' f; do
                 rel="${f#site/}"
                 if [ "$rel" != "index.html" ]; then
-                  printf '                  <li><a href="/%s">%s</a></li>\n' "$rel" "$rel" >> site/index.html
+                  printf '                  <li><a href="./%s">%s</a></li>\n' "$rel" "$rel" >> site/index.html
                 fi
               done
           
